@@ -1,0 +1,339 @@
+---
+title: "GNG Analysis: UnMASCK"
+author: "Mindy Ross & Theresa Nguyen"
+date: "Updated `r Sys.Date()`"
+output: bookdown::html_document2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+# Examing the effect of time of day on go/no-go task performance in those with mood disorders
+
+```{r}
+# import libraries
+library(readr)
+library(tidyverse)
+library(tableone)
+library(lmerTest)
+library(sjPlot)
+library(effects)
+library(ggpubr)
+
+# read in GNG file
+f <- '/home/mindy/Desktop/BiAffect-iOS/UnMASCK/BiAffect_data/processed_output/GNG/AllUsers_GNGdata_fromZIP_allResponseTimes_v3.csv'
+dfRaw <- read.csv(f)
+dfRaw$hour <-as.numeric(lubridate::hour(dfRaw$sessionTimestampLocal))
+dfRaw$hour <- lubridate::hour(dfRaw$sessionTimestampLocal)
+dfRaw$hour2 <- ifelse(dfRaw$hour == 0,24,dfRaw$hour)
+dfRaw$gender <- dfRaw$gender-1
+dfRaw$gender <- factor(dfRaw$gender, levels=c(0,1),labels=c('Male','Female'))
+dfRaw$diagnosis <- dfRaw$diagnosis-1
+dfRaw$diagnosis <- factor(dfRaw$diagnosis, levels=c(0,1), labels=c('HC','MD'))
+dfRaw$diagnosis_group <- factor(dfRaw$diagnosis_group, levels=c(0,1,2), labels=c('HC','D','BD'))
+# add 1 sec as the correct no-go rxn time
+dfRaw$rxnTimeToPlot <- with(dfRaw, ifelse((go == 'False') & (incorrect == 'False'), 1, timeToThreshold_all))
+
+set.seed(123)
+dfPlot <- dfRaw %>% filter((rxnTimeToPlot >= 0.2) & (rxnTimeToPlot <= 1) & (hour2 > 6)) %>% 
+              mutate(trial_type = factor(ifelse((go=='True')&(incorrect=='False'), 0, #correct go
+                                         ifelse((go=='False')&(incorrect=='True'), 1, #incorrect no go
+                                         ifelse((go=='False')&(incorrect=='False'), 2, NA))), # correct no go
+                          levels = c(0,1,2), labels = c('correct_go_trial','incorrect_noGo_trial','correct_noGo_trial'))) %>% 
+                          ungroup %>% group_by(userID) %>% mutate(hour_range = max(hour2) - min(hour2)) %>% 
+                          filter((hour_range >= 8) & (max(taskNumber) >= 10))
+
+dfRxn <- dfRaw %>% filter((timeToThreshold_all >= 0.2) & (timeToThreshold_all <= 1) & (hour2 > 6)) %>% 
+                mutate(rxnTime =log(timeToThreshold_all),
+                     rxnTime_shuffled = sample(rxnTime),
+                     trial_type = factor(ifelse((go=='True'), 0,1),
+                                  levels = c(0,1), labels = c('Go Trial','No-Go Trial'))) %>% 
+                ungroup %>% group_by(userID) %>% mutate(hour_range = max(hour2) - min(hour2)) %>% 
+                          filter((hour_range >= 8) & (max(taskNumber) >= 10)) %>% ungroup() %>%
+                drop_na(gender, age, visit1_QIDS)
+
+set.seed(1234)
+dfAccuracy <- dfRaw %>% filter((go == 'False') & (hour2 > 6)) %>% 
+                mutate(nogo_flag = factor(ifelse(incorrect == 'False',1,0),levels=c(0,1),labels=c('Incorrect','Correct')), #incorrect=0, correct=1
+                       nogo_flag_shuffled = sample(nogo_flag)) %>%
+              ungroup %>% group_by(userID) %>% mutate(hour_range = max(hour2) - min(hour2)) %>% 
+                          filter((hour_range >= 8) & (max(taskNumber) >= 10)) %>% ungroup() %>% drop_na(gender, age, visit1_QIDS)
+
+dfDemo <- dfRxn %>% group_by(userID) %>% 
+                summarise(gender = unique(gender),
+                          age = unique(age),
+                          diagnosis = unique(diagnosis),
+                          diagnosis_group = unique(diagnosis_group),
+                          visit1_QIDS = unique(visit1_QIDS),
+                          nGNG = max(taskNumber)) 
+```
+
+## Raster Plot
+
+```{r}
+dfRxn$date <- as.Date(dfRxn$date, "%Y-%m-%d")
+dfRxn2 <- dfRxn %>% group_by(userID) %>% mutate(dayNumber = as.integer(date - min(date) + 1)) %>% ungroup %>%
+                    group_by(userID, dayNumber,taskNumber) %>% filter(row_number()==1) %>% ungroup %>%
+                    group_by(userID, dayNumber) %>% mutate(count = n())
+
+ggplot(dfRxn2, aes(x=dayNumber, y = userID, group = count)) + 
+  geom_point(size=count)
+
+dfRxn3 <- subset(dfRxn2, dfRxn2$dayNumber <40)
+ggplot(dfRxn3, aes(x=dayNumber, y = userID, group = count)) + 
+  geom_point(aes(size=count))
+```
+
+```{r}
+ggplot(data = dfRxn, aes(x=hour2, fill=diagnosis)) +
+  geom_histogram(aes(color=diagnosis))
+```
+
+## Demographics Summary
+
+```{r}
+tab3 <- CreateTableOne(strata = "diagnosis", data = subset(dfDemo, select=-c(userID)))
+ptables <- print(tab3,  quote = FALSE, noSpaces = TRUE, printToggle = FALSE, test = TRUE, showAllLevels = FALSE, missing = FALSE, varLabels = TRUE )
+ptables
+```
+
+- Note: ignore row with diagnosis in table above
+
+## QIDS distribution
+
+```{r}
+hist(dfRxn$visit1_QIDS)
+```
+
+## GNG distributions
+
+**Hourly task distribution**
+
+GNG tasks tend to be completed between the hours of 7-24 (0700-0059). Data filtered in model to only include tasks completed during these hours.
+
+```{r}
+hist(dfRaw$hour, breaks=25)
+```
+
+**GNG Reaction Time**
+
+Before filtering
+
+```{r}
+dfRxnTime <- subset(dfRaw, (dfRaw$timeToThreshold_all >0) & (dfRaw$timeToThreshold_all <=3))
+
+ggplot(dfRxnTime, aes(x=timeToThreshold_all)) + 
+  geom_histogram(bins=50) +
+  scale_x_continuous(breaks=seq(0,3,0.2))+ 
+  geom_vline(xintercept = 0.2,color='darkgrey') +
+  geom_vline(xintercept = 1,color='darkgrey') +
+  xlab("Reaction Time (s)")+
+  ylab("Count")+
+  theme_bw()+
+  theme(text=element_text(face="bold", size=12),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "NA"),
+        axis.line = element_line(size = 1, colour = "grey80"),
+        legend.title=element_blank())
+
+ggsave(filename = 'histogram_rxnTimes_300dpi.png', path = '/home/mindy/Desktop/BiAffect-iOS/UnMASCK/gng_rxn_time/paper/figures/', width = 6, height = 4, device='png', dpi=300)
+```
+
+All GNG reaction times (correct and incorrect trials) following filtering to between 0.2 - 1 sec.
+
+```{r}
+hist(exp(dfRxn$rxnTime))
+```
+
+Filtered logged GNG reaction time per trial (correct and incorrect trials)
+
+```{r}
+hist(dfRxn$rxnTime)
+```
+
+**Comparison of reaction time by trial type**
+
+```{r}
+ggplot(dfRxn, aes(x=exp(rxnTime), group = trial_type)) + 
+  geom_boxplot(aes(fill=trial_type)) +
+  xlab("Reaction Time")+
+  ylab("Trial Type")+
+  theme_bw()+
+  theme(text=element_text(face="bold", size=12),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "NA"),
+        axis.line = element_line(size = 1, colour = "grey80"),
+        legend.title=element_blank())
+```
+
+## Spaghetti Plots
+
+Correct no-go trials given a reaction time of 1 sec in the plots below to visualize their frequency relative to the other trials with reaction times. Incorrect go trials were not plotted.
+
+```{r,fig.width=12,fig.height=12}
+ggplot(dfPlot, aes(x=jitter(hour2), y=jitter(rxnTimeToPlot), trial_type)) + 
+      geom_point(size=0.25, aes(color=trial_type, shape=trial_type), alpha=0.7) + 
+      scale_color_manual(values=c('#56B4E9','red','chartreuse4')) +
+      scale_shape_manual(values=c(3,19,3)) +
+      facet_wrap(~userID)
+```
+
+## No-go trial counts by hour and trial accuracy
+
+Incorrect = False means correct trial
+Incorrect = True means incorrect trial
+
+# Mixed Models Analyses
+
+## No-Go Trial Accuracy
+
+### Effect of hour, subject, and practice on no-go trial accuracy
+
+Random slope of hour and intercept per subject
+
+```{r}
+model1Nogo <- glmer(nogo_flag ~ scale(age) + gender + 
+                      scale(log(taskNumber)) +  scale(visit1_QIDS) * poly(hour2,2, raw=FALSE) +    
+                  (1 + scale(log(taskNumber)) | userID), 
+                  data = dfAccuracy, family = 'binomial',
+                  control=glmerControl(optimizer="bobyqa")) 
+summary(model1Nogo)
+car::vif(model1Nogo)
+```
+
+### Model Summaries
+
+```{r}
+tab_model(model1Nogo,digits=3, digits.re = 3,show.ci=FALSE, show.loglik = TRUE, show.obs = TRUE, show.ngroups = TRUE, show.icc=TRUE)
+```
+
+### Plots
+
+```{r}
+effectNumNogo <- as.data.frame(effects::Effect('taskNumber', model1Nogo))
+model1_plot_numNogo <- ggplot(data=effectNumNogo, aes(x=taskNumber, y=fit))+
+  geom_line(size=1)+
+  geom_ribbon(aes(ymin=lower, ymax=upper),alpha=.2) +
+  xlab("Task Number")+
+  ylab("No-Go Trial \nAccuracy")+
+  theme_bw()+
+  theme(text=element_text(face="bold", size=12),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "NA"),
+        axis.line = element_line(size = 1, colour = "grey80"),
+        legend.title=element_blank())
+
+intPred_nogo <- ggeffects::ggpredict(model1Nogo, terms = c("hour2 [all]", "visit1_QIDS [0,5,10]"))
+intPlot_nogo <- ggplot(intPred_nogo, aes(x = x, y = predicted, colour = group, fill=group)) +
+  geom_line(size=1) +
+  geom_ribbon(aes(ymin=conf.low, ymax=conf.high), alpha=.1,  colour = "NA") +
+  xlab("Hour")+
+  ylab("No-Go Trial \nAccuracy") +
+  theme_bw() +
+  theme(text=element_text(face="bold", size=12),
+        panel.border = element_rect(fill = NA, colour = "NA"),
+        axis.line = element_line(size = 1, colour = "grey80"),
+        legend.position = 'top',
+        legend.title=element_blank())
+
+figure1 <- ggarrange(model1_plot_numNogo,
+                    intPlot_nogo,
+                     labels = c("A","B"), 
+                     ncol = 2, nrow=1, widths=c(0.9,1))
+figure1
+
+ggsave(filename = 'nogo_unmasckData_v2.png', path = '/home/mindy/Desktop/BiAffect-iOS/UnMASCK/gng_rxn_time/paper/figures/', width = 10, height = 4.5, device='png', dpi=300)
+```
+
+## Reaction Time
+
+### Effect of hour and trial type on reaction time
+
+```{r}
+model1Rxn <- lmer(rxnTime ~ scale(age) + gender + 
+                    scale(log(taskNumber)) + trial_type + scale(visit1_QIDS) * poly(hour2,2, raw=FALSE) + 
+                 (1 + scale(log(taskNumber)) | userID), data = dfRxn, REML=FALSE, control = lmerControl(optimizer='nmkbw'))
+summary(model1Rxn)
+car::vif(model1Rxn)
+```
+
+### Model Summaries
+
+```{r}
+tab_model(model1Rxn,digits=3, digits.re = 3,p.val = 'satterthwaite',show.ci=FALSE, show.loglik = TRUE, show.obs = TRUE, show.ngroups = TRUE, show.icc=TRUE)
+```
+
+### Plots
+
+```{r} 
+effectTrialRxn <- as.data.frame(Effect(c('trial_type'), model1Rxn))
+model1_plot_trialRxn <- ggplot(data=effectTrialRxn, aes(x=trial_type, y=exp(fit)))+
+  geom_point(size = 4)+
+  geom_errorbar(aes(ymin=exp(lower), ymax=exp(upper)),alpha=.5, size = 1) +
+  xlab("Trial Type")+
+  ylab("GNG Reaction \nTime (s)")+
+  theme_bw()+
+  theme(text=element_text(face="bold", size=12),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "NA"),
+        axis.line = element_line(size = 1, colour = "grey80"),
+        legend.title=element_blank())
+
+effectTrialRxn <- as.data.frame(Effect(c('trial_type'), model1Rxn))
+model1_plot_trialRxn_withRaw <- ggplot()+
+  geom_point(data=effectTrialRxn, aes(x=trial_type, y=exp(fit)), size = 4)+
+  geom_errorbar(data=effectTrialRxn, aes(x=trial_type, ymin=exp(lower), ymax=exp(upper)),alpha=.5, size = 1) +
+  geom_jitter(data=dfRxn, aes(x=trial_type, y=exp(rxnTime)), alpha=0.2, size=0.2)+
+  xlab("Trial Type")+
+  ylab("GNG Reaction \nTime (s)")+
+  theme_bw()+
+  theme(text=element_text(face="bold", size=12),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "NA"),
+        axis.line = element_line(size = 1, colour = "grey80"),
+        legend.title=element_blank())
+model1_plot_trialRxn_withRaw
+
+intPred <- ggeffects::ggpredict(model1Rxn, terms = c("hour2 [all]", "visit1_QIDS [0,5,10]"))
+intPlot_rxn <- ggplot(intPred, aes(x = x, y = exp(predicted), colour = group, fill=group)) +
+  geom_line(size=1) +
+  geom_ribbon(aes(ymin=exp(conf.low), ymax=exp(conf.high)), alpha=.1,  colour = "NA") +
+  xlab("Hour")+
+  ylab("GNG Reaction \nTime (s)") +
+  theme_bw() +
+  theme(text=element_text(face="bold", size=12),
+        panel.border = element_rect(fill = NA, colour = "NA"),
+        axis.line = element_line(size = 1, colour = "grey80"),
+        legend.position = 'right',
+        legend.title=element_blank())
+
+dfRxn$QIDS_grouped <- ifelse(dfRxn$visit1_QIDS < 5, 0,
+                             ifelse(dfRxn$visit1_QIDS <10, 5,10))
+intPlot_rxn_withRaw <- ggplot() +
+  geom_line(data = intPred, aes(x = x, y = exp(predicted), colour = group, fill=group), size=1) +
+  geom_ribbon(data = intPred, aes(x = x, y = exp(predicted), ymin=exp(conf.low), ymax=exp(conf.high), fill = group), alpha=.1) +
+  geom_point(data = dfRxn, aes(x=hour2, y=exp(rxnTime), color=factor(QIDS_grouped)), alpha=0.1) +
+  xlab("Hour")+
+  ylab("GNG Reaction \nTime (s)") +
+  theme_bw() +
+  theme(text=element_text(face="bold", size=12),
+        panel.border = element_rect(fill = NA, colour = "NA"),
+        axis.line = element_line(size = 1, colour = "grey80"),
+        legend.position = 'right',
+        legend.title=element_blank())
+intPlot_rxn_withRaw
+
+figure2 <- ggpubr::ggarrange(model1_plot_trialRxn_withRaw, 
+                             intPlot_rxn_withRaw,
+                     labels = c("A","B"), 
+                     ncol = 2, nrow=1, widths=c(0.9,1))
+figure2
+
+ggsave(filename = 'rxn_unmasckData_v2.png', path = '/home/mindy/Desktop/BiAffect-iOS/UnMASCK/gng_rxn_time/paper/figures/', width = 10, height = 4, device='png', dpi=300)
+```

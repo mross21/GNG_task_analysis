@@ -1,0 +1,341 @@
+---
+title: "GNG Analysis: open science"
+author: "Mindy Ross & Theresa Nguyen"
+date: "Updated `r Sys.Date()`"
+output: bookdown::html_document2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+# Examing the effect of time of day on go/no-go task performance in those with mood disorders
+
+```{r}
+# import libraries
+library(readr)
+library(tidyverse)
+library(tableone)
+library(lmerTest)
+library(sjPlot)
+library(effects)
+library(ggpubr)
+
+# read in GNG file
+f <- '/home/mindy/Desktop/BiAffect-iOS/data_processing/processed_outputs/GNG/AllUsers_GNGdata_fromZIP_allResponseTimes.csv'
+dfRaw <- read.csv(f)
+dfRaw$hour <-as.numeric(lubridate::hour(dfRaw$sessionTimestampLocal))
+dfRaw$hour <- lubridate::hour(dfRaw$sessionTimestampLocal)
+# remove rxn times > 3 sec
+dfRaw$timeToThreshold_all <- ifelse(dfRaw$timeToThreshold_all > 3, NA, dfRaw$timeToThreshold_all)
+
+dfRaw$genderFactor <- ifelse(dfRaw$gender == 'Male', 0,
+                             ifelse(dfRaw$gender == 'Female', 1,
+                                    ifelse(dfRaw$gender == 'Non-binary or third gender', 2, NA)))
+dfRaw <- dfRaw %>% filter(genderFactor != 2)
+dfRaw$genderFactor <- factor(dfRaw$genderFactor, levels=c(0,1),labels=c('Male','Female'))
+
+dfRaw$diagnosis <- replace(dfRaw$diagnosis, dfRaw$diagnosis == '', NA) 
+dfRaw <- dfRaw %>% drop_na(diagnosis)
+dfRaw$diagnosis <- factor(dfRaw$diagnosis) 
+
+dfRaw$BD_factor <- factor(dfRaw$BD, levels=c(0,1),labels=c('Negative','Positive'))
+dfRaw$depression_factor <- factor(dfRaw$depression, levels=c(0,1),labels=c('Negative','Positive'))
+dfRaw$SAD_factor <- factor(dfRaw$SAD, levels=c(0,1),labels=c('Negative','Positive'))
+dfRaw$anxiety_factor <- factor(dfRaw$anxiety, levels=c(0,1),labels=c('Negative','Positive'))
+dfRaw$ADHD_factor <- factor(dfRaw$ADHD, levels=c(0,1),labels=c('Negative','Positive'))
+dfRaw$schizophrenia_factor <- factor(dfRaw$schizophrenia, levels=c(0,1),labels=c('Negative','Positive'))
+dfRaw$OCD_factor <- factor(dfRaw$OCD, levels=c(0,1),labels=c('Negative','Positive'))
+dfRaw$PTSD_factor <- factor(dfRaw$PTSD, levels=c(0,1),labels=c('Negative','Positive'))
+dfRaw$SUD_factor <- factor(dfRaw$SUD, levels=c(0,1),labels=c('Negative','Positive'))
+
+# add 1 sec as the correct no-go rxn time
+dfRaw$rxnTimeToPlot <- with(dfRaw, ifelse((go == 'False') & (incorrect == 'False'), 1, timeToThreshold_all))
+
+set.seed(1234)
+dfRxn <- dfRaw %>% filter((timeToThreshold_all >= 0.2) & (timeToThreshold_all <= 1) & (hour > 7)) %>% 
+                mutate(rxnTime =log(timeToThreshold_all),
+                     rxnTime_shuffled = sample(rxnTime),
+                     trial_type = factor(ifelse((go=='True'), 0,1),
+                                  levels = c(0,1), labels = c('Go Trial','No-Go Trial'))) %>% ungroup() %>%
+                filter((taskNumber > 1) & (taskNumber <= 21)) %>%
+                group_by(userID) %>% mutate(nTasks = max(taskNumber)) %>% ungroup() %>%
+                filter(nTasks >= 3) %>% drop_na(age,gender, diagnosis)
+
+dfAccuracy <- dfRaw %>% filter((go == 'False') & (hour > 7)) %>% 
+                mutate(nogo_flag = factor(ifelse(incorrect == 'False',1,0),levels=c(0,1),labels=c('Incorrect','Correct')), #incorrect=0, correct=1
+                       nogo_flag_shuffled = sample(nogo_flag)) %>% ungroup() %>%
+                filter((taskNumber > 1) & (taskNumber <= 21)) %>%
+                group_by(userID) %>% mutate(nTasks = max(taskNumber)) %>% ungroup() %>%
+                filter(nTasks >= 3) %>% drop_na(age,gender, diagnosis)
+
+unmasckUserList <- c("9bn-MeLyPNvGOsB3GTgX7lfF", "nFo64ndW6U-RVbNL5IEd9ck6", "XKczkbtmSoX3pv4mFLkbDcTA","DUcdX56Np_058YZm1mmGXfZu", "E2--i7mqXTdtUrvvE0G-TTB6", "G5A91eHtAnaA4PIKWszot9Cn", "iSX3--I3H49YxnxMYcuIc8Ok", "bECjQIc1NEs1MdU84SPIsVzR", "yuRtbuOXxVYU3DlkrbRTbQxm","JBxb6dnWv9sA06VhyeaIaZgf", "jodDi7Lxp0fMGBug74uqoyX8", "6-VjFj3_X1ciuGCyGC_q1-_i","iCHdqkYDvNqHhzUHWYZmdfq7", "5GtX_dZueSvqJCLEvk2Fnl9q", "CYkG7LTpJ0k8UFai6aHOgKeo","Ie1WNvTKJ2hjXfEF1gT9WSw7", "1E7M7HvzqaRy59yX1MPCNPDW", "DGzqEqovjkrGllxCkpcrsDTn","EVtPtSokvtvuvxK9msXVA4TM", "UOVJXxoxljfah4G_EF_oZLr1", "KpYwG_qGGtiR2nme6XENvyEj","Vofg7z1xADgFgFC7k13OHwSK", "8wK-7SqPRerEi1JCJE369DBz", "y2OxoEXgZQE-Z17g5u394Jbk","zzP_LG5FJtLSj4gCWjZ4roLJ", "kiPdi044EmtNAo8a5hdzQLgm", "0_POeg9ljwiSjEKfvb590BD_","ownnjCEVtv7TPmSfrlcgxz06", "jJ1whkA0UjUt0rQPsDkyhtEr", "zcY6E3SZoS58KTEkwEan_Mf3","7PvMXRMo_xaZJE-LWAr_efDk", "oprPi_AoMi6T-kv-cISRVQPK", "RsRtg9O1FhpbLYk38h3SPWAw","fmELsbWMN1s3rZKKfHKOA5Ei", "NZnq9pGcBex8jx61KYV8g5nF", "GMhEgDi7Z9GiHLQVA9SacL77", "FBJNri-kuLEc6yzJDOly8Xh-", "ywJFPniW7HI7dyQUOJIED0F7", "i7nrQnZ_phP5UJnEHpdHgZ8L", "1jOrjCim1k38slSSP3xLdeWS", "SCeDzbFG67htYpuY__6kp2te", "HHL0VrVtuTR76ehtmdOj406L", "hoSZBt59vCMGzZMbcl7q0Ms9", "BLgOI8rHmAp2452xnQHHBt7b", "LjD0SMwPGDoPq4XQ-bAaMMH9","wZc40txUbq6BCDbHyU9bVcJ9", "pwJtx0eaiOcSVQ7yycsfWdLR", "K-HgXY6Ee9-g-zI9JUZAVYXI", "8NPIpWwE2HtW9Ms6MVr4iB8D", "2Frbad2afSuc8AyfoprxyBE-", "PW0HPDKMrE1sUYgJe3y1GW0z","ArrRKDCDA68U951hyrpmGXrl", "1p-U7v3p8UWcwHAxpRk7xS6R", "bFzc7ZZiZw0TYHRP-H8__qUM","ZqQCbaijbsz4zPioRh9TO58g", "47rZmq7WzvkFN1Xuz3iz7M5L", "lRGPI3JBxSqvss_cYmyT0gS8","dl3zJf2WXYMY36hZZ3FBzIhH", "aBmWuugUK_0Kc6dScUkg1BLi", "l0DjOCoJ-s9OfNTEx90ptDlH","x35Fz4DEhyvEScX7p2JuZu4T", "ilDvKT9fCZhlvuET0CG5eHNu", "A1regU9f5KHP9RsyTDSnw-8e", "ZUsw-e-L5xL_PYVrjEdHzYzc", "PpVWhdzXE_2YvvwxtgTMkX-0", "pmUSIo7ZoyIcPm7kFxYtMwQN","6LLSVAHYT2RAJj0jHOz832S4", "McJIiBBJo8a8g7i_d1pgSojE", "AFLmMCDnHqiVawlfl9GUO4pe","XAy4Wa1IrUIKXSrLkZb5eKpy", "30NTdwLBHz1z8RYCECUhnFrO")
+OSuserList <- unique(dfRxn$healthCode)
+
+table(unmasckUserList %in% OSuserList)
+print('two common users - remove both')
+
+# remove common users
+dfRxn <- dfRxn %>% filter(!(healthCode %in% unmasckUserList))
+dfAccuracy <- dfAccuracy %>% filter(!(healthCode %in% unmasckUserList))
+
+dfDemo <- dfRxn %>% group_by(userID) %>% 
+                summarise(gender = unique(genderFactor),
+                          age = unique(age),
+                          diagnosis = unique(diagnosis),
+                          BD = unique(BD_factor),
+                          depression = unique(depression_factor),
+                          SAD = unique(SAD_factor),
+                          anx = unique(anxiety_factor),
+                          ADHD = unique(ADHD_factor),
+                          schizo = unique(schizophrenia_factor),
+                          ocd = unique(OCD_factor),
+                          ptsd = unique(PTSD_factor),
+                          sud = unique(SUD_factor),
+                          nGNG = max(taskNumber)) 
+```
+
+## Demographics Summary
+
+```{r}
+tab3 <- CreateTableOne(data = subset(dfDemo, select= -c(userID, diagnosis)))
+ptables <- print(tab3,  quote = FALSE, noSpaces = TRUE, printToggle = FALSE, test = TRUE, showAllLevels = FALSE, missing = FALSE, varLabels = TRUE )
+ptables
+```
+
+## Roster Plot
+
+```{r}
+dfRxn$date <- as.Date(dfRxn$date, "%Y-%m-%d")
+dfRxn2 <- dfRxn %>% group_by(userID) %>% mutate(dayNumber = as.integer(date - min(date) + 1)) %>% ungroup %>%
+                    group_by(userID, taskNumber) %>% filter(row_number()==1)
+
+ggplot(dfRxn2, aes(x=dayNumber, y = userID, group = taskNumber)) + 
+  geom_count()
+
+dfRxn3 <- subset(dfRxn2, dfRxn2$dayNumber <50)
+ggplot(dfRxn3, aes(x=dayNumber, y = userID, group = taskNumber)) + 
+  geom_count()
+
+dfRxn4 <- subset(dfRxn2, dfRxn2$dayNumber <30)
+ggplot(dfRxn4, aes(x=dayNumber, y = userID, group = taskNumber)) + 
+  geom_count()
+```
+
+## Age Distribution
+
+```{r}
+ageList <- dfRxn %>% group_by(userID) %>% summarise(age = unique(age))
+hist(ageList$age, breaks=20)
+```
+
+## GNG distributions
+
+**Hourly task distribution**
+
+GNG tasks tend to be completed between the hours of 8-23 (0800-2359). Data filtered in model to only include tasks completed during these hours.
+
+```{r}
+hist(dfRxn$hour, breaks=35)
+```
+
+**GNG Task Number Distribution**
+
+```{r}
+tasks <- dfRaw %>% group_by(userID) %>% summarise(n = unique(taskNumber))
+h<-hist(tasks$n, breaks=35)
+
+# median # tasks per person
+median(tasks$n)
+```
+
+**Total number of GNG tasks per person in models**
+
+```{r}
+modelTasks <- dfRxn %>% group_by(userID) %>% summarise(max = max(taskNumber))
+hist(modelTasks$max)
+```
+
+**GNG Accuracy Distribution**
+
+Fraction of correct responses to no-go trials
+
+```{r}
+dfAccPerc <- dfAccuracy %>% group_by(userID, taskNumber) %>% summarise(percAccurate = mean(ifelse(incorrect == 'False',1,0)))
+hist(dfAccPerc$percAccurate)
+```
+
+Histogram of no-go trial accuracy 
+
+* 1 is correct
+* 0 is incorrect
+
+```{r}
+hist(ifelse(dfAccuracy$incorrect == 'False',1,0))
+```
+
+# Mixed Models Analyses
+
+## No-Go Trial Accuracy
+
+### Effect of hour, diagnosis, and practice on no-go trial accuracy
+
+Random intercept per subject
+
+```{r}
+model1Nogo <- glmer(nogo_flag ~ scale(age) + genderFactor +
+                      scale(log(taskNumber)) + 
+                      BD_factor +
+                      depression_factor +
+                      SAD_factor +
+                      anxiety_factor +
+                      ADHD_factor +
+                      PTSD_factor +
+                      poly(hour,2) +
+                  (1 + scale(log(taskNumber)) | userID), 
+                  data = dfAccuracy, family = 'binomial',
+                  control=glmerControl(optimizer="bobyqa"))
+summary(model1Nogo)
+car::vif(model1Nogo)
+```
+
+### Model Summaries
+
+```{r}
+tab_model(model1Nogo,digits=3, digits.re = 3,show.ci=FALSE, show.loglik = TRUE, show.obs = TRUE, show.ngroups = TRUE, show.icc=TRUE)
+```
+
+### Plots
+
+```{r}
+effectNumNogo <- as.data.frame(effects::Effect('taskNumber', model1Nogo))
+model1_plot_numNogo <- ggplot(data=effectNumNogo, aes(x=taskNumber, y=fit))+
+  geom_line(size=1)+
+  geom_ribbon(aes(ymin=lower, ymax=upper),alpha=.2) +
+  xlab("Task Number")+
+  ylab("No-Go Trial \nAccuracy")+
+  theme_bw()+
+  theme(text=element_text(face="bold", size=12),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "NA"),
+        axis.line = element_line(size = 1, colour = "grey80"),
+        legend.title=element_blank())
+
+effectDep <- as.data.frame(Effect(c('depression_factor'), model1Nogo))
+model1_plot_Dep <- ggplot(data=effectDep, aes(x=depression_factor, y=fit))+
+  geom_point(size=4)+
+  geom_errorbar(aes(ymin=lower, ymax=upper),alpha=.5, size=1) +
+  xlab("Depression")+
+  ylab("No-Go Trial \nAccuracy")+
+  theme_bw()+
+  theme(text=element_text(face="bold", size=12),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "NA"),
+        axis.line = element_line(size = 1, colour = "grey80"),
+        legend.title=element_blank())
+
+
+figure1 <- ggarrange(model1_plot_numNogo,
+                    model1_plot_Dep,
+                     labels = c("A","B"), 
+                     ncol = 2, nrow=1, widths=c(0.9,1))
+ggsave(filename = 'nogo_OSData_300dpi.png', path = '/home/mindy/Desktop/BiAffect-iOS/UnMASCK/gng_rxn_time/paper/figures/', width = 9, height = 4, device='png', dpi=300)
+
+```
+
+## Reaction Time
+
+### Effect of hour and trial type on reaction time
+
+```{r}
+model1Rxn <- lmer(rxnTime ~ scale(age) +
+                    scale(log(taskNumber)) +  genderFactor + trial_type + 
+                      BD_factor +
+                      depression_factor +
+                      SAD_factor +
+                      anxiety_factor +
+                      ADHD_factor +
+                      PTSD_factor +
+                    poly(hour,2) + 
+                 (1 + scale(log(taskNumber)) | userID), data = dfRxn, REML=FALSE, control = lmerControl(optimizer='nmkbw'))
+summary(model1Rxn)
+car::vif(model1Rxn)
+```
+
+### Model Summaries
+
+```{r}
+tab_model(model1Rxn,digits=3, digits.re = 3,p.val = 'satterthwaite',show.ci=FALSE, show.loglik = TRUE, show.obs = TRUE, show.ngroups = TRUE, show.icc=TRUE)
+```
+
+### Plots
+
+```{r}
+effectAgeRxn <- as.data.frame(Effect(c('age'), model1Rxn))
+model1_plot_ageRxn <- ggplot(data=effectAgeRxn, aes(x=age, y=exp(fit)))+
+  geom_line(size=1)+
+  geom_ribbon(aes(ymin=exp(lower), ymax=exp(upper)),alpha=.2) +
+  xlab("Age")+
+  ylab("GNG Reaction \nTime (s)")+
+  theme_bw()+
+  theme(text=element_text(face="bold", size=12),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "NA"),
+        axis.line = element_line(size = 1, colour = "grey80"),
+        legend.title=element_blank())
+
+effectHourRxn <- as.data.frame(Effect(c('hour'), model1Rxn))
+model1_plot_hrRxn <- ggplot(data=effectHourRxn, aes(x=hour, y=exp(fit)))+
+  geom_line(size=1)+
+  geom_ribbon(aes(ymin=exp(lower), ymax=exp(upper)),alpha=.2) +
+  xlab("Hour")+
+  ylab("GNG Reaction \nTime (s)")+
+  theme_bw()+
+  theme(text=element_text(face="bold", size=12),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "NA"),
+        axis.line = element_line(size = 1, colour = "grey80"),
+        legend.title=element_blank())
+
+effectTrialRxn <- as.data.frame(Effect(c('trial_type'), model1Rxn))
+model1_plot_trialRxn <- ggplot(data=effectTrialRxn, aes(x=trial_type, y=exp(fit)))+
+  geom_point(size=4)+
+  geom_errorbar(aes(ymin=exp(lower), ymax=exp(upper)),alpha=.5, size=1) +
+  xlab("Trial Type")+
+  ylab("GNG Reaction \nTime (s)")+
+  theme_bw()+
+  theme(text=element_text(face="bold", size=12),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "NA"),
+        axis.line = element_line(size = 1, colour = "grey80"),
+        legend.title=element_blank())
+
+figure2 <- ggarrange(model1_plot_ageRxn,
+                    model1_plot_trialRxn,
+                    model1_plot_hrRxn,
+                     labels = c("A","B","C"), 
+                     ncol = 1, nrow=3, widths=c(0.9,1))
+figure2
+ggsave(filename = 'rxn_OSData_300dpi.png', path = '/home/mindy/Desktop/BiAffect-iOS/UnMASCK/gng_rxn_time/paper/figures/', width = 5, height = 10, device='png', dpi=300)
+```
+
+### Histogram of Reaction Times
+
+```{r}
+ggplot(data=dfRxn, aes(x=exp(rxnTime), group = trial_type))+
+  geom_histogram(aes(fill=trial_type)) +
+  xlab("Time (s)")+
+  ylab("Count")+
+  theme_bw()+
+  theme(text=element_text(face="bold", size=12),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, colour = "NA"),
+        axis.line = element_line(size = 1, colour = "grey80"),
+        legend.title=element_blank())
+```
